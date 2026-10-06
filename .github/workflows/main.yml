@@ -15,8 +15,8 @@ jobs:
         with:
           gradle-version: 8.7
       - run: gradle assembleDebug --no-daemon
-  working-directory: CevirmenApp
+  working-directory: translate3
       - uses: actions/upload-artifact@v4
         with:
           name: cevirmen-apk
-          path: CevirmenApp/app/build/outputs/apk/debug/app-debug.apk
+          path: translate3/app/build/outputs/apk/debug/app-debug.apk
