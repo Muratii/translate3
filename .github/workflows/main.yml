@@ -1,45 +1,21 @@
-name: Build Kotlin APK
-
+name: Build APK
 on:
   push:
-    branches: [ "main", "master" ]
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        distribution: 'temurin'
-        java-version: '17'
-
-    - name: Setup Gradle
-      uses: gradle/actions/setup-gradle@v4
-
-    # [GÜNCELLENDİ] Klasörün içindeki gradlew dosyasını otomatik bulup çalıştırma izni verir
-    - name: Grant Execute Permission for Gradlew
-      run: find . -name "gradlew" -exec chmod +x {} +
-      continue-on-error: true
-
-    # [GÜNCELLENDİ] Klasör nerede olursa olsun içine girip derlemeyi başlatır
-    - name: Build Debug APK
-      run: |
-        GRADLEW_PATH=$(find . -name "gradlew" | head -n 1)
-        if [ -z "$GRADLEW_PATH" ]; then
-          echo "HATA: Projenizde gradlew dosyası bulunamadı! Lütfen yüklediğiniz dosyaları kontrol edin."
-          exit 1
-        fi
-        cd "$(dirname "$GRADLEW_PATH")"
-        ./gradlew assembleDebug --no-daemon
-
-    - name: Upload APK
-      uses: actions/upload-artifact@v4
-      with:
-        name: cevirmen-apk
-        path: "**/build/outputs/apk/debug/*.apk"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+      - run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cevirmen-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
