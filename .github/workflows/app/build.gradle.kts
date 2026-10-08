@@ -41,6 +41,9 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.activity:activity-compose:1.9.0")
     implementation("androidx.core:core-ktx:1.13.1")
-    // Çeviri motoru (Google ML Kit) - API anahtarı gerekmez
+    // Çeviri motoru (Google ML Kit) - model bir kez inince internetsiz çalışır
     implementation("com.google.mlkit:translate:17.0.3")
+    // Çevrimdışı konuşma tanıma (Vosk) - Hint İngilizcesi modeli ile
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+    implementation("com.alphacephei:vosk-android:0.3.47")
 }
