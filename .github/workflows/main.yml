@@ -7,14 +7,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Hint Ingilizcesi ses modelini indir
-        run: |
-          mkdir -p app/src/main/assets
-          curl -L -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip
-          unzip -q model.zip
-          rm -rf app/src/main/assets/model
-          mv vosk-model-small-en-in-0.4 app/src/main/assets/model
-          ls app/src/main/assets/model
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
