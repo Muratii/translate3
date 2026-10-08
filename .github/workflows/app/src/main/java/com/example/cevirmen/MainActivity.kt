@@ -1,14 +1,8 @@
 package com.example.cevirmen
 
 import android.Manifest
-import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,16 +18,24 @@ import androidx.core.content.ContextCompat
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.TranslatorOptions
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
 
 class MainActivity : ComponentActivity() {
 
-    private var recognizer: SpeechRecognizer? = null
-    private val handler = Handler(Looper.getMainLooper())
+    private var model: Model? = null
+    private var speechService: SpeechService? = null
 
-    // Ekrandaki durumlar
     private var listening by mutableStateOf(false)
-    private var modelReady by mutableStateOf(false)
-    private var status by mutableStateOf("Çeviri modeli indiriliyor...")
+    private var voskReady by mutableStateOf(false)
+    private var translatorReady by mutableStateOf(false)
+    private var status by mutableStateOf("Ses modeli hazırlanıyor (ilk açılış biraz sürer)...")
     private var committedEn by mutableStateOf("")
     private var committedTr by mutableStateOf("")
     private var partialEn by mutableStateOf("")
@@ -56,24 +58,70 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // İlk açılışta İngilizce->Türkçe modeli bir kez indirilir (~30 MB)
+        prepareVoskModel()
+
+        // Çeviri modeli yalnızca ilk seferde internetle iner, sonra internetsiz çalışır
         translator.downloadModelIfNeeded()
-            .addOnSuccessListener {
-                modelReady = true
-                status = "Hazır. Başlat'a dokun ve İngilizce konuş."
-            }
+            .addOnSuccessListener { translatorReady = true; updateReadyStatus() }
             .addOnFailureListener {
-                status = "Model indirilemedi. İnternet bağlantını kontrol et."
+                status = "Çeviri modeli indirilemedi. İlk açılışta internet gerekli."
             }
 
         setContent {
             MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    Screen()
-                }
+                Surface(modifier = Modifier.fillMaxSize()) { Screen() }
             }
         }
     }
+
+    private fun updateReadyStatus() {
+        if (voskReady && translatorReady) {
+            status = "Hazır (internetsiz çalışır). Başlat'a dokun ve İngilizce konuş."
+        }
+    }
+
+    // ---------- Ses modelini APK içinden telefona aç ----------
+
+    private fun prepareVoskModel() {
+        Thread {
+            try {
+                val target = File(filesDir, "vosk-model")
+                val done = File(filesDir, "vosk-model.done")
+                if (!done.exists()) {
+                    target.deleteRecursively()
+                    copyAssetDir("model", target)
+                    done.writeText("ok")
+                }
+                val m = Model(target.absolutePath)
+                runOnUiThread {
+                    model = m
+                    voskReady = true
+                    updateReadyStatus()
+                }
+            } catch (e: Exception) {
+                runOnUiThread { status = "Ses modeli yüklenemedi: ${e.message}" }
+            }
+        }.start()
+    }
+
+    private fun copyAssetDir(assetPath: String, target: File) {
+        val children = assets.list(assetPath)
+        if (children == null || children.isEmpty()) {
+            try {
+                target.parentFile?.mkdirs()
+                assets.open(assetPath).use { input ->
+                    FileOutputStream(target).use { out -> input.copyTo(out) }
+                }
+            } catch (e: IOException) {
+                target.mkdirs() // boş klasör
+            }
+        } else {
+            target.mkdirs()
+            for (name in children) copyAssetDir("$assetPath/$name", File(target, name))
+        }
+    }
+
+    // ---------- Arayüz ----------
 
     @Composable
     private fun Screen() {
@@ -89,24 +137,22 @@ class MainActivity : ComponentActivity() {
             Text(status, fontSize = 13.sp)
 
             TextCard(
-                title = "İngilizce (duyulan)",
-                text = (committedEn + " " + partialEn).trim(),
-                modifier = Modifier.weight(1f)
+                "İngilizce (duyulan)",
+                (committedEn + " " + partialEn).trim(),
+                Modifier.weight(1f)
             )
             TextCard(
-                title = "Türkçe (çeviri)",
-                text = (committedTr + " " + partialTr).trim(),
-                modifier = Modifier.weight(1f)
+                "Türkçe (çeviri)",
+                (committedTr + " " + partialTr).trim(),
+                Modifier.weight(1f)
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
                     onClick = { if (listening) stopListening() else requestAndStart() },
-                    enabled = modelReady,
+                    enabled = voskReady && translatorReady,
                     modifier = Modifier.weight(1f)
-                ) {
-                    Text(if (listening) "Durdur" else "Başlat")
-                }
+                ) { Text(if (listening) "Durdur" else "Başlat") }
                 OutlinedButton(
                     onClick = {
                         committedEn = ""; committedTr = ""
@@ -133,7 +179,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ---------- Mikrofon / Konuşma tanıma ----------
+    // ---------- Mikrofon / Vosk ----------
 
     private fun requestAndStart() {
         val granted = ContextCompat.checkSelfPermission(
@@ -143,90 +189,68 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            status = "Bu telefonda konuşma tanıma servisi yok (Google uygulaması gerekli)."
-            return
+        val m = model ?: return
+        try {
+            val recognizer = Recognizer(m, 16000.0f)
+            speechService = SpeechService(recognizer, 16000.0f).also {
+                it.startListening(listener)
+            }
+            listening = true
+            status = "Dinliyorum..."
+        } catch (e: Exception) {
+            status = "Mikrofon başlatılamadı: ${e.message}"
         }
-        listening = true
-        status = "Dinliyorum..."
-        beginSession()
     }
 
     private fun stopListening() {
+        speechService?.stop()
+        speechService?.shutdown()
+        speechService = null
         listening = false
-        handler.removeCallbacksAndMessages(null)
-        recognizer?.destroy()
-        recognizer = null
         partialEn = ""; partialTr = ""
         status = "Durdu."
     }
 
-    private fun beginSession() {
-        if (!listening) return
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).apply {
-            setRecognitionListener(listener)
-        }
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        }
-        recognizer?.startListening(intent)
-    }
-
-    // Tanıyıcı her cümleden sonra durur; dinlemeyi kısa gecikmeyle yeniden başlatırız
-    private fun restartSoon() {
-        if (listening) handler.postDelayed({ beginSession() }, 300)
-    }
+    // Vosk çıktısı küçük harfli ve noktasızdır; çeviri kalitesi için düzeltiriz
+    private fun tidy(text: String): String =
+        text.trim().replaceFirstChar { it.uppercase() } + "."
 
     private val listener = object : RecognitionListener {
-        override fun onPartialResults(partialResults: Bundle?) {
-            val text = partialResults
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull().orEmpty()
-            if (text.isBlank()) return
+        override fun onPartialResult(hypothesis: String?) {
+            val text = JSONObject(hypothesis ?: return).optString("partial")
+            if (text.isBlank() || text == partialEn) return
             partialEn = text
             translator.translate(text).addOnSuccessListener { partialTr = it }
         }
 
-        override fun onResults(results: Bundle?) {
-            val text = results
-                ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                ?.firstOrNull().orEmpty()
-            partialEn = ""; partialTr = ""
-            if (text.isNotBlank()) {
-                committedEn = (committedEn + " " + text).trim()
-                translator.translate(text).addOnSuccessListener {
-                    committedTr = (committedTr + " " + it).trim()
-                }
-            }
-            restartSoon()
+        override fun onResult(hypothesis: String?) {
+            commit(JSONObject(hypothesis ?: return).optString("text"))
         }
 
-        override fun onError(error: Int) {
-            when (error) {
-                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> {
-                    stopListening(); status = "Mikrofon izni verilmemiş."
-                }
-                SpeechRecognizer.ERROR_NETWORK,
-                SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> status = "Ağ hatası, tekrar deniyorum..."
-                else -> { /* sessizlik / eşleşme yok: sadece yeniden başlat */ }
-            }
-            restartSoon()
+        override fun onFinalResult(hypothesis: String?) {
+            commit(JSONObject(hypothesis ?: return).optString("text"))
         }
 
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
-        override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() {}
-        override fun onEvent(eventType: Int, params: Bundle?) {}
+        override fun onError(exception: Exception?) {
+            status = "Hata: ${exception?.message}"
+        }
+
+        override fun onTimeout() {}
+    }
+
+    private fun commit(raw: String) {
+        partialEn = ""; partialTr = ""
+        if (raw.isBlank()) return
+        val en = tidy(raw)
+        committedEn = (committedEn + " " + en).trim()
+        translator.translate(en).addOnSuccessListener {
+            committedTr = (committedTr + " " + it).trim()
+        }
     }
 
     override fun onDestroy() {
-        handler.removeCallbacksAndMessages(null)
-        recognizer?.destroy()
+        speechService?.shutdown()
+        model?.close()
         translator.close()
         super.onDestroy()
     }
