@@ -1,57 +1,29 @@
-name: Build and Release APK
-
+name: Build APK
 on:
   push:
-    branches:
-      - main
-    tags:
-      - 'v*'
   workflow_dispatch:
-
-permissions:
-  contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - name: Hint Ingilizcesi ses modelini indir
+        run: |
+          mkdir -p app/src/main/assets
+          curl -L -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-in-0.4.zip
+          unzip -q model.zip
+          rm -rf app/src/main/assets/model
+          mv vosk-model-small-en-in-0.4 app/src/main/assets/model
+          ls app/src/main/assets/model
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-
-      - name: Build APK
-        run: gradle assembleDebug --no-daemon
-        working-directory: .github/workflows
-
-      - name: Upload APK as Artifact
-        uses: actions/upload-artifact@v4
+      - run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
         with:
           name: cevirmen-apk
-          path: .github/workflows/app/build/outputs/apk/debug/app-debug.apk
-
-      - name: Prepare Release APK
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          cp .github/workflows/app/build/outputs/apk/debug/app-debug.apk \
-             Cevirmen-${GITHUB_REF_NAME}.apk
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "Cevirmen-${GITHUB_REF_NAME}.apk" \
-            --title "Cevirmen ${GITHUB_REF_NAME}" \
-            --generate-notes
+          path: app/build/outputs/apk/debug/app-debug.apk
